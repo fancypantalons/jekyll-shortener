@@ -13,6 +13,10 @@ module JekyllFeed
         "internal" => lambda { |cache, post| get_internal_url(cache, post) }
       }
 
+      ShortURL.valid_services.each do |sym|
+        @methods[sym.id2name] = lambda { |cache, post| get_shorturl_url(cache, post, sym) }
+      end
+
       @site = site
       @config ||= @site.config["shortener"] || {}
 
@@ -96,6 +100,10 @@ module JekyllFeed
       # We get four candidates from the algorithm above, so now we select
       # the first unique option.
       candidates.find { |u| ! cache.key? u }
+    end
+
+    def get_shorturl_url(cache, page, service)
+      ShortURL.shorten(URI.join(@site.config['url'], page.url).to_s, service)
     end
   end
 end

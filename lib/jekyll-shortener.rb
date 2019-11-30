@@ -4,4 +4,5 @@ require "jekyll"
 require "fileutils"
 require "digest"
 require "jekyll-shortener/generator"
+require "shorturl"
 
