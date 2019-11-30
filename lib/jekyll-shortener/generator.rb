@@ -18,13 +18,33 @@ module JekyllFeed
       end
 
       @site = site
-      @config ||= @site.config["shortener"] || {}
+      @config = @site.config["shortener"] || {}
 
-      # DO PLUGIN STUFF HERE
+      @exclude = ((@config["exclude"] || []) << "^/$").map { |p| Regexp.new(p) }
+
+      method = @config["method"]
+
+      if method.nil?
+        return
+      elsif @methods[method].nil?
+        log("error", "Invalid URL shortening method '#{method}'")
+
+        return
+      else
+        @methodcb = @methods[method]
+      end
+
+      pages = get_page_list(@config["pages"] || false, @config["collections"] || [])
+
+      if pages.length == 0
+        log("error", "URL shortener is enabled but no pages are configured for shortening.")
+
+        return
+      end
 
       cache = load_url_cache()
 
-      get_page_list().each do |page|
+      pages.each do |page|
         shorturl = get_short_url(cache, page)
         page.data["shorturl"] = shorturl
       end
@@ -62,12 +82,24 @@ module JekyllFeed
       File.open(get_cache_file(), "wb") { |f| f.puts YAML.dump(cache) }
     end
 
-    def get_page_list()
-      @site.posts.docs
+    def get_page_list(include_pages, collections)
+      pages = []
+
+      pages += @site.pages if (include_pages)
+
+      pages += @site
+        .collections
+        .values
+        .find_all { |collection| collections.include? collection.label }
+        .map { |collection| collection.docs }
+        .flatten
+
+      return pages
+        .find_all { |page| @exclude.none? { |regex| regex === page.url }  }
     end
 
     def get_short_url(cache, page)
-      return cache.fetch(page.id) { |id| cache[id] = @methods[@config["method"]].call(cache, page) }
+      return cache.fetch(page.url) { |url| cache[url] = @methodcb.call(cache, page) }
     end
 
     def get_internal_url(cache, page)
@@ -86,7 +118,7 @@ module JekyllFeed
       #
       # Credit goes to Alessandro Ghedini!  Thank you!
 
-      digest = Digest::MD5.hexdigest(page.id)
+      digest = Digest::MD5.hexdigest(page.url)
 
       candidates = digest.split("").each_slice(8).map do |chunk|
         val = chunk.join().to_i(16)
