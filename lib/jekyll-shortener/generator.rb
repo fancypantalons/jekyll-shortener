@@ -7,8 +7,14 @@ module JekyllFeed
 
     # Main plugin action, called by Jekyll-core
     def generate(site)
+      @site = site
+      @config = @site.config["shortener"] || {}
       @logger_prefix = "[jekyll-shortener]"
 
+      #
+      # Configure our URL shortening methods.  The selected method will be
+      # pulled later based on our configuration.
+      #
       @methods = {
         "internal" => lambda { |cache, post| get_internal_url(cache, post) }
       }
@@ -17,23 +23,36 @@ module JekyllFeed
         @methods[sym.id2name] = lambda { |cache, post| get_shorturl_url(cache, post, sym) }
       end
 
-      @site = site
-      @config = @site.config["shortener"] || {}
-
+      #
+      # Set page exclusions.  Note, we always exclude the root/index page.
+      #
       @exclude = ((@config["exclude"] || []) << "^/$").map { |p| Regexp.new(p) }
 
+      #
+      # Now pull the URL shortening method and related configuration.
+      #
       method = @config["method"]
+      methodcb = @methods[method]
 
       if method.nil?
         return
-      elsif @methods[method].nil?
+      end
+
+      if methodcb.nil?
         log("error", "Invalid URL shortening method '#{method}'")
 
         return
-      else
-        @methodcb = @methods[method]
       end
 
+      if method == "internal" and ! @config.key? "shorturl"
+        log("error", "Internal URL shortening method requires 'shortener.shorturl' to be set.")
+
+        return
+      end
+
+      #
+      # Finally, pull the list of pages and generate our short URLs.
+      #
       pages = get_page_list(@config["pages"] || false, @config["collections"] || [])
 
       if pages.length == 0
@@ -42,14 +61,15 @@ module JekyllFeed
         return
       end
 
-      cache = load_url_cache()
-
-      pages.each do |page|
-        shorturl = get_short_url(cache, page)
-        page.data["shorturl"] = shorturl
+      with_url_cache do |cache|
+        pages.each do |page|
+          begin
+            page.data["shorturl"] = get_short_url(methodcb, cache, page)
+          rescue StandardError => e
+            log("error", "#{e} while getting short URL for '#{page.url}' using method '#{method}', skipping...")
+          end
+        end
       end
-
-      save_url_cache(cache)
     end
 
     private
@@ -71,14 +91,14 @@ module JekyllFeed
       file = Jekyll.sanitized_path(cache_folder, "shortener-cache")
       File.open(file, "wb") { |f| f.puts YAML.dump({}) } unless File.exist?(file)
 
-      return file
+      file
     end
 
-    def load_url_cache()
-      SafeYAML.load_file(get_cache_file()) || {}
-    end
+    def with_url_cache(&block)
+      cache = SafeYAML.load_file(get_cache_file()) || {}
 
-    def save_url_cache(cache)
+      block.call(cache)
+
       File.open(get_cache_file(), "wb") { |f| f.puts YAML.dump(cache) }
     end
 
@@ -94,12 +114,11 @@ module JekyllFeed
         .map { |collection| collection.docs }
         .flatten
 
-      return pages
-        .find_all { |page| @exclude.none? { |regex| regex === page.url }  }
+      pages.find_all { |page| @exclude.none? { |rx| rx === page.url }  }
     end
 
-    def get_short_url(cache, page)
-      return cache.fetch(page.url) { |url| cache[url] = @methodcb.call(cache, page) }
+    def get_short_url(cb, cache, page)
+      cache.fetch(page.url) { |k| cache[k] = cb.call(cache, page) }
     end
 
     def get_internal_url(cache, page)
@@ -131,7 +150,7 @@ module JekyllFeed
 
       # We get four candidates from the algorithm above, so now we select
       # the first unique option.
-      candidates.find { |u| ! cache.key? u }
+      candidates.find { |u| ! cache.values.include? u }
     end
 
     def get_shorturl_url(cache, page, service)
